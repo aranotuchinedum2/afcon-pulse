@@ -1,0 +1,21 @@
+# AfconPulse — Render deployment config
+# Docs: https://render.com/docs/render-yaml-spec
+
+services:
+  - type: web
+    name: afcon-pulse-api
+    runtime: python
+    region: oregon          # closest free-tier region; change to frankfurt for lower EU latency
+    plan: free              # free tier — sleeps after 15min inactivity, wakes on request (~30s cold start)
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false         # set manually in Render dashboard — never commit this
+      - key: FRONTEND_URL
+        value: https://afcon-pulse.vercel.app
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+    healthCheckPath: /api/health
+    autoDeploy: true        # auto-deploy on git push to main
