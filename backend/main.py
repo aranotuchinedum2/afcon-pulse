@@ -32,7 +32,23 @@ app.add_middleware(
 
 # ─── CLIENTS ──────────────────────────────────────────────────────────────────
 anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-scraper = Nitter(log_level=1)
+
+# skip_instance_check=True stops ntscraper from pre-checking instances at startup
+# (which throws "Cannot choose from an empty sequence" when all are temporarily down).
+# We handle instance rotation manually in scrape_tweets() instead.
+scraper = Nitter(log_level=1, skip_instance_check=True)
+
+# Known public Nitter instances — we rotate through these on failure
+NITTER_INSTANCES = [
+    "nitter.poast.org",
+    "nitter.privacydev.net",
+    "nitter.net",
+    "nitter.lucabased.space",
+    "nitter.moomoo.me",
+    "nitter.cz",
+    "nitter.1d4.us",
+    "nitter.kavin.rocks",
+]
 
 # ─── SEARCH TERMS ─────────────────────────────────────────────────────────────
 AFCON_QUERIES = [
@@ -192,24 +208,49 @@ def compute_geo_breakdown(enriched_tweets: list[dict]) -> dict:
     }
 
 # ─── SCRAPER ──────────────────────────────────────────────────────────────────
+def _try_query(query: str, instance: str, max_results: int) -> list[dict]:
+    """Single query attempt against one specific Nitter instance."""
+    result = scraper.get_tweets(query, mode="term", number=max_results, instance=instance)
+    return result.get("tweets", [])
+
+
 def scrape_tweets(max_per_query: int = 20) -> list[dict]:
+    """
+    Scrape tweets across all AFCON queries.
+    Rotates through NITTER_INSTANCES on failure so one dead node
+    doesn't kill the whole scrape.
+    """
     all_tweets = []
     seen_ids   = set()
 
     for query in AFCON_QUERIES:
-        try:
-            log.info(f"Scraping: {query}")
-            result = scraper.get_tweets(query, mode="term", number=max_per_query)
-            for tweet in result.get("tweets", []):
+        tweets_for_query = []
+
+        for instance in NITTER_INSTANCES:
+            try:
+                log.info(f"Scraping '{query}' via {instance}")
+                tweets_for_query = _try_query(query, instance, max_per_query)
+                if tweets_for_query:
+                    log.info(f"  Got {len(tweets_for_query)} tweets from {instance}")
+                    break
+                else:
+                    log.warning(f"  {instance} returned 0 — trying next")
+            except Exception as e:
+                log.warning(f"  {instance} failed: {e} — trying next")
+            time.sleep(1.0)
+
+        if not tweets_for_query:
+            log.warning(f"All instances failed for: '{query}'")
+        else:
+            for tweet in tweets_for_query:
                 tid = tweet.get("link", tweet.get("id", ""))
                 if tid and tid not in seen_ids:
                     seen_ids.add(tid)
                     all_tweets.append(tweet)
-            time.sleep(1.5)
-        except Exception as e:
-            log.warning(f"Failed query '{query}': {e}")
 
-    log.info(f"Scraped {len(all_tweets)} unique tweets")
+        time.sleep(1.5)
+
+    log.info(f"Total unique tweets scraped: {len(all_tweets)}")
     return all_tweets
 
 
